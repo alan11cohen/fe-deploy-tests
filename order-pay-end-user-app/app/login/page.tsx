@@ -5,20 +5,24 @@ import {
   signInWithPopup,
   GoogleAuthProvider,
 } from "firebase/auth";
-import axios from "axios";
 import { auth } from "../../firebase";
-import { useState } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { redirect } from "next/navigation";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useLogin } from "@/app/login/hooks/use-auth";
 
-export default function LoginPage() {
+function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [backendResponse, setBackendResponse] = useState(null);
+  const [backendResponse, setBackendResponse] = useState<any>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
   const googleProvider = new GoogleAuthProvider();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo = searchParams.get("returnTo");
+
+  const loginMutation = useLogin();
 
   const sendTokenToBackend = async (
     firebaseIdToken: string,
@@ -28,42 +32,24 @@ export default function LoginPage() {
       setErrorMessage("");
       setBackendResponse(null);
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
-      const response = await axios.post(`${apiUrl}/auth/login`, {
+      const response = await loginMutation.mutateAsync({
         firebaseIdToken: firebaseIdToken,
       });
 
       setBackendResponse({
-        ...response.data,
+        ...response,
         email: loggedInUserEmail,
         firebaseIdToken: firebaseIdToken,
       });
 
       return true;
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        console.error("Error al enviar token al backend:", error.message);
-      } else {
-        console.error("Error al enviar token al backend:", error);
-      }
+    } catch (error: any) {
+      console.error("Error al enviar token al backend:", error);
 
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "response" in error &&
-        error.response &&
-        "data" in (error as any).response &&
-        (error as any).response.data &&
-        "message" in (error as any).response.data
-      ) {
-        setErrorMessage(
-          `Error del backend: ${((error as any).response.data as any).message}`
-        );
-      } else {
-        setErrorMessage(
-          "Error al conectar con el backend o procesar la solicitud."
-        );
-      }
+      const errorMsg =
+        error?.message ||
+        "Error al conectar con el backend o procesar la solicitud.";
+      setErrorMessage(`Error del backend: ${errorMsg}`);
 
       setBackendResponse(null);
       return false;
@@ -72,6 +58,13 @@ export default function LoginPage() {
 
   const sleep = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
+
+  const getRedirectPath = () => {
+    if (returnTo === "scanner") {
+      return "/join-table?showScanner=true";
+    }
+    return "/restaurants/1";
+  };
 
   const handleEmailPasswordLogin = async () => {
     try {
@@ -86,34 +79,36 @@ export default function LoginPage() {
         userCredential.user.email
       );
       if (success) {
+        sessionStorage.setItem("firebaseToken", token);
+        sessionStorage.setItem("userEmail", userCredential.user.email || "");
+        sessionStorage.setItem("userId", userCredential.user.uid);
+        sessionStorage.setItem("userType", "logged");
+
         await sleep(1000);
-        router.push("/restaurants/1");
+        router.push(getRedirectPath());
       }
     } catch (error: any) {
-      let friendlyErrorMessage =
-        "Error al iniciar sesión con email y contraseña.";
+      let errorMessage = "Error al iniciar sesión con email y contraseña.";
       switch (error.code) {
         case "auth/wrong-password":
-          friendlyErrorMessage = "Contraseña incorrecta.";
+          errorMessage = "Contraseña incorrecta.";
           break;
         case "auth/user-not-found":
-          friendlyErrorMessage = "No existe una cuenta con este email.";
+          errorMessage = "No existe una cuenta con este email.";
           break;
         case "auth/invalid-email":
-          friendlyErrorMessage = "El formato del email es inválido.";
+          errorMessage = "El formato del email es inválido.";
           break;
         case "auth/user-disabled":
-          friendlyErrorMessage = "Tu cuenta ha sido deshabilitada.";
+          errorMessage = "Tu cuenta ha sido deshabilitada.";
           break;
         case "auth/network-request-failed":
-          friendlyErrorMessage =
-            "Problema de conexión. Por favor, revisa tu internet.";
+          errorMessage = "Problema de conexión. Por favor, revisa tu internet.";
           break;
         default:
-          friendlyErrorMessage = `Error al intentar iniciar sesion`;
+          errorMessage = `Error al intentar iniciar sesion`;
       }
-      setErrorMessage(friendlyErrorMessage);
-      console.error("Error Firebase (Email/Pass):", error.code, error.message);
+      setErrorMessage(errorMessage);
       setBackendResponse(null);
     }
   };
@@ -126,8 +121,13 @@ export default function LoginPage() {
       const token = await user.getIdToken();
       const success = await sendTokenToBackend(token, user.email);
       if (success) {
+        sessionStorage.setItem("firebaseToken", token);
+        sessionStorage.setItem("userEmail", user.email || "");
+        sessionStorage.setItem("userId", user.uid);
+        sessionStorage.setItem("userType", "logged");
+
         await sleep(1000);
-        router.push("/restaurants/1");
+        router.push(getRedirectPath());
       }
     } catch (error: any) {
       let friendlyErrorMessage = "Error al iniciar sesión con Google.";
@@ -152,75 +152,133 @@ export default function LoginPage() {
           friendlyErrorMessage = `Error desconocido: ${error.message}`;
       }
       setErrorMessage(friendlyErrorMessage);
-      console.error("Error Firebase (Google):", error.code, error.message);
       setBackendResponse(null);
     }
   };
 
   const handleContinueAsGuest = () => {
-    router.push("/restaurants/1");
+    const guestId = crypto.randomUUID();
+    localStorage.setItem("guestId", guestId);
+    localStorage.setItem("userType", "guest");
+
+    router.push(getRedirectPath());
   };
 
+  const isLoading = loginMutation.isPending;
+
   return (
-    <div className="justify-center  text-center max-w-md mx-auto mt-16 p-8 border border-gray-200 rounded-lg shadow-md">
-      <h1 className="text-2xl font-semibold text-center text-gray-800 mb-6">
-        Iniciar Sesión
-      </h1>
-
-      <input
-        type="email"
-        placeholder="Email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        className="w-full mb-4 px-4 py-2 border rounded-md border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
-      />
-
-      <input
-        type="password"
-        placeholder="Contraseña"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        className="w-full mb-6 px-4 py-2 border rounded-md border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
-      />
-
-      <button
-        onClick={handleEmailPasswordLogin}
-        className="w-full mb-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-semibold transition"
-      >
-        Iniciar sesión con Email
-      </button>
-
-      <button
-        onClick={handleGoogleLogin}
-        className="w-full mb-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-md font-semibold transition"
-      >
-        Iniciar sesión con Google
-      </button>
-
-      <button
-        onClick={handleContinueAsGuest}
-        className="w-full py-3 bg-gray-600 hover:bg-gray-700 text-white rounded-md font-semibold transition"
-      >
-        Continuar sin iniciar sesión
-      </button>
-
-      {backendResponse && (
-        <div className="mt-6 p-4 border border-green-400 rounded-md bg-green-50 text-green-700">
-          <h3 className="font-semibold mb-2">
-            ✅ Sesión iniciada correctamente
-          </h3>
-          <p>
-            <strong>Bienvenido</strong>
-          </p>
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+      <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg">
+        <div>
+          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+            Inicia sesión en tu cuenta
+          </h2>
         </div>
-      )}
+        <div className="mt-8 space-y-6">
+          <div className="space-y-4">
+            <div>
+              <label
+                htmlFor="email"
+                className="block text-sm font-medium text-gray-700"
+              >
+                Email
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                autoComplete="email"
+                required
+                className="mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="tu@email.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="password"
+                className="block text-sm font-medium text-gray-700"
+              >
+                Contraseña
+              </label>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                className="mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="Contraseña"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+          </div>
 
-      {errorMessage && (
-        <div className="mt-6 p-4 border border-red-400 rounded-md bg-red-50 text-red-700">
-          <h3 className="font-semibold mb-2">⚠️ Error al iniciar sesión</h3>
-          <p>{errorMessage}</p>
+          <div className="space-y-4">
+            <button
+              type="button"
+              onClick={handleEmailPasswordLogin}
+              disabled={isLoading}
+              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+            >
+              {isLoading ? "Iniciando sesión..." : "Iniciar sesión con Email"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleGoogleLogin}
+              disabled={isLoading}
+              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50"
+            >
+              {isLoading ? "Cargando..." : "Continuar con Google"}
+            </button>
+
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-gray-300" />
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-2 bg-white text-gray-500">O</span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleContinueAsGuest}
+              disabled={isLoading}
+              className="group relative w-full flex justify-center py-2 px-4 border border-gray-300 text-sm font-medium rounded-md text-gray-500 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 disabled:opacity-50"
+            >
+              Continuar como invitado
+            </button>
+          </div>
+
+          {(errorMessage || loginMutation.error) && (
+            <div className="rounded-md bg-red-50 p-4">
+              <div className="text-sm text-red-700">
+                {errorMessage || loginMutation.error?.message}
+              </div>
+            </div>
+          )}
+
+          {backendResponse && (
+            <div className="rounded-md bg-green-50 p-4">
+              <div className="text-sm text-green-700">
+                Inicio de sesión exitoso
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <LoginForm />
+    </Suspense>
   );
 }

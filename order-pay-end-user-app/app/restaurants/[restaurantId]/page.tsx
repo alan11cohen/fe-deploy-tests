@@ -1,9 +1,10 @@
 import { MenuModule } from "@/components/menu_module";
 
-export default function RestaurantMenuPage({ params }: any) {
+export default async function RestaurantMenuPage({ params }: any) {
+  const awaitedParams = await params;
   return (
     <main className="min-h-screen flex items-center justify-center">
-      <MenuModule restaurantId={Number(params.restaurantId)} />
+      <MenuModule restaurantId={Number(awaitedParams.restaurantId)} />
     </main>
   );
 }

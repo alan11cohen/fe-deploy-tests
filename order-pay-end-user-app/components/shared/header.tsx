@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Menu, UtensilsIcon, X } from "lucide-react";
+import { Logo } from "../logo";
 
 export const Header = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -11,9 +12,8 @@ export const Header = () => {
     <header className="bg-[#c2c1c0] shadow-md sticky top-0 z-50 text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex justify-between items-center">
         <div className="flex items-center gap-2">
-          <UtensilsIcon className="h-6 w-6" />
           <Link href="/" className="text-2xl font-bold tracking-wide">
-            Tabbie
+            <Logo />
           </Link>
         </div>
 

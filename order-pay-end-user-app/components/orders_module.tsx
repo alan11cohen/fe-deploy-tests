@@ -18,6 +18,7 @@ import {
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import React, { useEffect, useState } from "react";
 import { OrderDTO } from "@/app/models/order_dto";
+import { SplitTheBillDialog } from "./split_the_bill_dialog";
 
 interface OrdersModuleProps {
   apiBaseUrl: string;
@@ -32,6 +33,9 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<OrderDTO | null>(null);
   const [open, setOpen] = useState(false);
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [finalPaymentOpen, setFinalPaymentOpen] = useState(false);
+  const [splitAmount, setSplitAmount] = useState<number | null>(null);
 
   async function loadOrders() {
     if (ordersLoading) return;
@@ -66,7 +70,70 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
       alert("No se pudo confirmar las órdenes.");
     } finally {
       setOpen(false);
-      loadOrders(); 
+      loadOrders();
+    }
+  };
+
+  const handlePayment = async (method: "mercadopago" | "presencial", amount: number | null) => {
+    console.log("Handling payment");
+    console.log(amount);
+    console.log(method);
+    if (!amount) {
+      alert("Monto inválido para el pago.");
+      return;
+    }
+    try {
+      if (method === "presencial") {
+        alert(`Pago presencial seleccionado. Total a pagar: $${amount.toFixed(2)}`);
+        console.log(amount);
+        return;
+      }
+
+      const confirmedOrders = orders?.filter((o: any) => o.status === "confirmed") ?? [];
+
+      const productMap = new Map<string, number>();
+      confirmedOrders.forEach((order: any) => {
+        order.items.forEach((item: any) => {
+          const name = item.product.name;
+          const qty = item.quantity;
+          productMap.set(name, (productMap.get(name) ?? 0) + qty);
+        });
+      });
+
+      const description = Array.from(productMap.entries())
+        .map(([name, qty]) => `x${qty} ${name}`)
+        .join(", ");
+
+      let frontendUrl = window.location.origin;
+      if (frontendUrl.includes("localhost")) {
+        frontendUrl = "https://thetabbie.com";
+      }
+
+      const body = JSON.stringify({
+        sessionId: 1, // TODO: Cambiar por el ID de la sesión de mesa actual
+        amount,
+        description,
+        currency: "UYU",
+        successUrl: `${frontendUrl}/payment/success`,
+        failureUrl: `${frontendUrl}/payment/failure`,
+        pendingUrl: `${frontendUrl}/payment/pending`
+      });
+
+      const res = await fetch(`${apiBaseUrl}/payments/mercadopago`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: body
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.init_point) throw new Error("Error al crear el checkout");
+
+      window.location.href = data.init_point;
+    } catch (e) {
+      console.error(e);
+      alert("No se pudo iniciar el pago con MercadoPago.");
     }
   };
 
@@ -141,7 +208,6 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
                     <Typography variant="body2">
                       <strong>Estado:</strong>{" "}
                       {(() => {
-                        //TODO: Change Status for Enums or similar
                         switch (order.status) {
                           case "pending":
                             return "Pendiente";
@@ -188,9 +254,167 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
               </DialogActions>
             </Dialog>
           </Box>
+
+          <Box textAlign="center" mt={3}>
+            <Button
+              variant="contained"
+              color="success"
+              onClick={() => setPaymentModalOpen(true)}
+            >
+              Pagar Órdenes Confirmadas
+            </Button>
+
+            <SplitTheBillDialog
+  open={paymentModalOpen}
+  orders={orders ?? []}
+  onClose={() => setPaymentModalOpen(false)}
+  onSubmit={(splitOption, config) => {
+    setPaymentModalOpen(false);
+
+    let totalSplitAmount = 0;
+
+    switch (splitOption) {
+      case "total":
+        totalSplitAmount = (orders ?? [])
+          .filter(o => o.status === "confirmed")
+          .reduce((sum, order) => {
+            return (
+              sum +
+              order.items.reduce((itemSum, item) => {
+                const base = Number(item.product.price);
+                const extras =
+                  item.selectedOptions?.reduce((total, opt) => {
+                    return (
+                      total +
+                      opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
+                    );
+                  }, 0) ?? 0;
+                return itemSum + (base + extras) * item.quantity;
+              }, 0)
+            );
+          }, 0);
+        break;
+
+      case "nPeople":
+        const totalConfirmed = (orders ?? [])
+          .filter(o => o.status === "confirmed")
+          .reduce((sum, order) => {
+            return (
+              sum +
+              order.items.reduce((itemSum, item) => {
+                const base = Number(item.product.price);
+                const extras =
+                  item.selectedOptions?.reduce((total, opt) => {
+                    return (
+                      total +
+                      opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
+                    );
+                  }, 0) ?? 0;
+                return itemSum + (base + extras) * item.quantity;
+              }, 0)
+            );
+          }, 0);
+
+        totalSplitAmount = totalConfirmed / Math.max(1, config.people);
+        break;
+
+      case "percentage":
+        const totalConfirmedPercentage = (orders ?? [])
+          .filter(o => o.status === "confirmed")
+          .reduce((sum, order) => {
+            return (
+              sum +
+              order.items.reduce((itemSum, item) => {
+                const base = Number(item.product.price);
+                const extras =
+                  item.selectedOptions?.reduce((total, opt) => {
+                    return (
+                      total +
+                      opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
+                    );
+                  }, 0) ?? 0;
+                return itemSum + (base + extras) * item.quantity;
+              }, 0)
+            );
+          }, 0);
+
+        totalSplitAmount = (totalConfirmedPercentage * config.percentage) / 100;
+        break;
+
+      case "amount":
+        totalSplitAmount = config.amount;
+        break;
+
+      case "products":
+        const selectedItemIds = new Set(config.selectedItems);
+
+        totalSplitAmount = (orders ?? [])
+          .filter(o => o.status === "confirmed")
+          .reduce((sum, order) => {
+            const orderSum = order.items.reduce((itemSum, item) => {
+              if (!selectedItemIds.has(Number(item.id))) return itemSum;
+
+              const base = Number(item.product.price);
+              const extras =
+                item.selectedOptions?.reduce((total, opt) => {
+                  return (
+                    total +
+                    opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
+                  );
+                }, 0) ?? 0;
+              return itemSum + (base + extras) * item.quantity;
+            }, 0);
+            return sum + orderSum;
+          }, 0);
+        break;
+    }
+
+    setSplitAmount(totalSplitAmount);
+    setFinalPaymentOpen(true);
+  }}
+/>
+
+            <Dialog
+              open={finalPaymentOpen}
+              onClose={() => setFinalPaymentOpen(false)}
+              maxWidth="xs"
+              fullWidth
+            >
+              <DialogTitle>Elegir método de pago</DialogTitle>
+              <DialogContent>
+                <Typography variant="h6" textAlign="center" mb={2}>
+                  Total a pagar: ${splitAmount?.toFixed(2)}
+                </Typography>
+                <DialogContentText>
+                  Por favor selecciona cómo deseas pagar las órdenes confirmadas.
+                </DialogContentText>
+              </DialogContent>
+              <DialogActions sx={{ flexDirection: "column", alignItems: "stretch", gap: 1, p: 2 }}>
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  onClick={() => {
+                    setFinalPaymentOpen(false);
+                    handlePayment("presencial", splitAmount);
+                  }}
+                >
+                  Pago presencial
+                </Button>
+                <Button
+                  variant="contained"
+                  color="secondary"
+                  onClick={() => {
+                    setFinalPaymentOpen(false);
+                    handlePayment("mercadopago", splitAmount);
+                  }}
+                >
+                  Pagar con MercadoPago
+                </Button>
+              </DialogActions>
+            </Dialog>
+          </Box>
         </>
       )}
-
 
       <Dialog
         open={selectedOrder !== null}
@@ -201,7 +425,6 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
         <DialogTitle>Detalles de la Orden</DialogTitle>
         <DialogContent dividers>
           {selectedOrder?.items.map((item) => {
-            console.log("SelectedOrder:" + JSON.stringify(selectedOrder, null, 2));
             const basePrice = Number(item.product.price);
             const optionsExtra =
               item.selectedOptions?.reduce((total, opt) => {
