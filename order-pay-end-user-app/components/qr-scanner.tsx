@@ -4,6 +4,7 @@ import { Html5Qrcode } from "html5-qrcode";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useJoinTable } from "@/app/join-table/hooks/use-join-table";
+import { useToast } from "./toast-context";
 
 function getOrCreateGuestId(): string {
   const key = "guestUserId";
@@ -27,6 +28,7 @@ export const QrScanner = () => {
   const cameraIdRef = useRef<string | null>(null);
   const isStartingRef = useRef(false);
   const router = useRouter();
+  const { showToast } = useToast();
 
   const joinTableMutation = useJoinTable();
 
@@ -207,6 +209,12 @@ export const QrScanner = () => {
 
   const isLoading = joinTableMutation.isPending;
 
+  useEffect(() => {
+    if (result && !error && !isLoading) {
+      showToast("Te has unido a la mesa.", "success");
+    }
+  }, [result, error, isLoading]);
+
   return (
     <div className="text-center">
       {!paused && !error && (
@@ -266,12 +274,6 @@ export const QrScanner = () => {
             {isLoading ? "Cargando..." : "Volver a intentar"}
           </button>
         </div>
-      )}
-
-      {result && !error && !isLoading && (
-        <p className="mt-4 text-green-600 font-semibold">
-          QR leído exitosamente
-        </p>
       )}
     </div>
   );

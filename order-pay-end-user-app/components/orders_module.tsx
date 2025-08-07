@@ -16,9 +16,10 @@ import {
   DialogContentText,
 } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { OrderDTO } from "@/app/models/order_dto";
 import { SplitTheBillDialog } from "./split_the_bill_dialog";
+import { useToast } from "./toast-context";
 
 interface OrdersModuleProps {
   apiBaseUrl: string;
@@ -30,12 +31,14 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
   onBack,
 }) => {
   const [orders, setOrders] = useState<OrderDTO[] | null>(null);
+  const ordersRef = useRef<OrderDTO[] | null>(null);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<OrderDTO | null>(null);
   const [open, setOpen] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [finalPaymentOpen, setFinalPaymentOpen] = useState(false);
   const [splitAmount, setSplitAmount] = useState<number | null>(null);
+  const { showToast } = useToast();
 
   async function loadOrders() {
     if (ordersLoading) return;
@@ -47,7 +50,7 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
       setOrders(data);
     } catch (e) {
       console.error(e);
-      alert("No se pudieron cargar las órdenes.");
+      showToast("No se pudieron cargar las órdenes", "error");
     } finally {
       setOrdersLoading(false);
     }
@@ -55,7 +58,8 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
 
   const handleConfirmOrders = async () => {
     try {
-      const res = await fetch(`${apiBaseUrl}/table-sessions/1/confirm`, {
+      const id = JSON.parse(localStorage.getItem("currentSession") || "{}").id;
+      const res = await fetch(`${apiBaseUrl}/table-sessions/${id}/confirm`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -64,10 +68,10 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
 
       if (!res.ok) throw new Error("Error al confirmar ordenes");
 
-      // TODO: ADD TOAST NOTIFICATION
+      showToast("Pedido enviado correctamente", "success");
     } catch (e) {
       console.error(e);
-      alert("No se pudo confirmar las órdenes.");
+      showToast("No se pudo confirmar el pedido", "error");
     } finally {
       setOpen(false);
       loadOrders();
@@ -75,17 +79,13 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
   };
 
   const handlePayment = async (method: "mercadopago" | "presencial", amount: number | null) => {
-    console.log("Handling payment");
-    console.log(amount);
-    console.log(method);
     if (!amount) {
-      alert("Monto inválido para el pago.");
+      showToast("Monto inválido para el pago", "error");
       return;
     }
     try {
       if (method === "presencial") {
-        alert(`Pago presencial seleccionado. Total a pagar: $${amount.toFixed(2)}`);
-        console.log(amount);
+        showToast(`Pago presencial seleccionado. Total a pagar: $${amount.toFixed(2)}`, "info");
         return;
       }
 
@@ -110,7 +110,7 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
       }
 
       const body = JSON.stringify({
-        sessionId: 1, // TODO: Cambiar por el ID de la sesión de mesa actual
+        sessionId: JSON.parse(localStorage.getItem("currentSession") || "{}").id,
         amount,
         description,
         currency: "UYU",
@@ -133,13 +133,54 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
       window.location.href = data.init_point;
     } catch (e) {
       console.error(e);
-      alert("No se pudo iniciar el pago con MercadoPago.");
+      showToast("No se pudo iniciar el pago con MercadoPago", "error");
     }
   };
 
   useEffect(() => {
     loadOrders();
   }, []);
+
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
+
+
+  useEffect(() => {
+    const session = JSON.parse(localStorage.getItem("currentSession") || "{}");
+    const tableSessionId = session?.id;
+
+    if (!tableSessionId) return;
+
+    const eventSource = new EventSource(`${apiBaseUrl}/orders/tableSession/${tableSessionId}`);
+
+    eventSource.addEventListener("order", (event: MessageEvent) => {
+      setOrdersLoading(true);
+      try {
+        const parsed = JSON.parse(event.data);
+        if (parsed.type === "new-order") {
+          const currentOrders = ordersRef.current || [];
+          const updatedOrders = [...currentOrders, parsed.order as OrderDTO];
+          setOrders(updatedOrders);
+          showToast("Se recibió una nueva orden", "info");
+        }
+      } catch (e) {
+        console.error("Error al procesar evento SSE:", e);
+      }
+      setOrdersLoading(false);
+    });
+
+
+    eventSource.onerror = (err) => {
+      console.error("Error en la conexión SSE:", err);
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, []);
+
 
   return (
     <Box width="100%" maxWidth="md" p={2} alignSelf="flex-start">
@@ -194,29 +235,85 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
                   }}
                 >
                   <Box>
-                    <Typography variant="body1">
-                      <strong>Productos:</strong>{" "}
+                    <Typography variant="body1" fontWeight="bold">
+                      <strong>Producto:</strong>{" "}
                       {order.items.map((i: any) => i.product.name).join(", ")}
                     </Typography>
-                    <Typography variant="body2">
-                      <strong>Cantidad total:</strong>{" "}
+                    <Typography variant="body2" fontWeight="bold">
+                      <strong>Cantidad:</strong>{" "}
                       {order.items.reduce(
                         (sum: any, i: any) => sum + i.quantity,
                         0
                       )}
                     </Typography>
-                    <Typography variant="body2">
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: "bold",
+                        color:
+                          order.status === "pending"
+                            ? "warning.main"
+                            : order.status === "confirmed"
+                            ? "success.main"
+                            : order.status === "cancelled"
+                            ? "error.main"
+                            : "text.primary",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 1,
+                      }}
+                    >
                       <strong>Estado:</strong>{" "}
                       {(() => {
                         switch (order.status) {
                           case "pending":
-                            return "Pendiente";
+                            return (
+                              <>
+                                <span
+                                  style={{
+                                    display: "inline-block",
+                                    width: 10,
+                                    height: 10,
+                                    borderRadius: "50%",
+                                    background: "#ff9800",
+                                    marginRight: 4,
+                                  }}
+                                />
+                                Pendiente
+                              </>
+                            );
                           case "confirmed":
-                            return "Confirmada";
+                            return (
+                              <>
+                                <span
+                                  style={{
+                                    display: "inline-block",
+                                    width: 10,
+                                    height: 10,
+                                    borderRadius: "50%",
+                                    background: "#4caf50",
+                                    marginRight: 4,
+                                  }}
+                                />
+                                Enviada
+                              </>
+                            );
                           case "cancelled":
-                            return "Cancelada";
-                          case "paid":
-                            return "Pagada";
+                            return (
+                              <>
+                                <span
+                                  style={{
+                                    display: "inline-block",
+                                    width: 10,
+                                    height: 10,
+                                    borderRadius: "50%",
+                                    background: "#f44336",
+                                    marginRight: 4,
+                                  }}
+                                />
+                                Cancelada
+                              </>
+                            );
                           default:
                             return order.status;
                         }
@@ -232,15 +329,20 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
           </List>
 
           <Box textAlign="center" mt={3}>
-            <Button variant="contained" color="primary" onClick={() => setOpen(true)}>
-              Confirmar Órdenes
+            <Button 
+              variant="contained" 
+              color="primary" 
+              onClick={() => setOpen(true)}
+              //disabled={orders?.filter(o => o.status === "pending").length === 0}
+            >
+              Enviar Pedido
             </Button>
 
             <Dialog open={open} onClose={() => setOpen(false)}>
-              <DialogTitle>Confirmar Órdenes</DialogTitle>
+              <DialogTitle>Confirmar Pedido</DialogTitle>
               <DialogContent>
                 <DialogContentText>
-                  Las órdenes confirmadas serán enviadas a la cocina para ser preparadas.
+                  Las órdenes pendientes serán enviadas a la cocina para ser preparadas y no se podrán modificar.
                   ¿Estás seguro de que deseas continuar?
                 </DialogContentText>
               </DialogContent>
@@ -265,114 +367,114 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
             </Button>
 
             <SplitTheBillDialog
-  open={paymentModalOpen}
-  orders={orders ?? []}
-  onClose={() => setPaymentModalOpen(false)}
-  onSubmit={(splitOption, config) => {
-    setPaymentModalOpen(false);
+              open={paymentModalOpen}
+              orders={orders ?? []}
+              onClose={() => setPaymentModalOpen(false)}
+              onSubmit={(splitOption, config) => {
+                setPaymentModalOpen(false);
 
-    let totalSplitAmount = 0;
+                let totalSplitAmount = 0;
 
-    switch (splitOption) {
-      case "total":
-        totalSplitAmount = (orders ?? [])
-          .filter(o => o.status === "confirmed")
-          .reduce((sum, order) => {
-            return (
-              sum +
-              order.items.reduce((itemSum, item) => {
-                const base = Number(item.product.price);
-                const extras =
-                  item.selectedOptions?.reduce((total, opt) => {
-                    return (
-                      total +
-                      opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
-                    );
-                  }, 0) ?? 0;
-                return itemSum + (base + extras) * item.quantity;
-              }, 0)
-            );
-          }, 0);
-        break;
+                switch (splitOption) {
+                  case "total":
+                    totalSplitAmount = (orders ?? [])
+                      .filter(o => o.status === "confirmed")
+                      .reduce((sum, order) => {
+                        return (
+                          sum +
+                          order.items.reduce((itemSum, item) => {
+                            const base = Number(item.product.price);
+                            const extras =
+                              item.selectedOptions?.reduce((total, opt) => {
+                                return (
+                                  total +
+                                  opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
+                                );
+                              }, 0) ?? 0;
+                            return itemSum + (base + extras) * item.quantity;
+                          }, 0)
+                        );
+                      }, 0);
+                    break;
 
-      case "nPeople":
-        const totalConfirmed = (orders ?? [])
-          .filter(o => o.status === "confirmed")
-          .reduce((sum, order) => {
-            return (
-              sum +
-              order.items.reduce((itemSum, item) => {
-                const base = Number(item.product.price);
-                const extras =
-                  item.selectedOptions?.reduce((total, opt) => {
-                    return (
-                      total +
-                      opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
-                    );
-                  }, 0) ?? 0;
-                return itemSum + (base + extras) * item.quantity;
-              }, 0)
-            );
-          }, 0);
+                  case "nPeople":
+                    const totalConfirmed = (orders ?? [])
+                      .filter(o => o.status === "confirmed")
+                      .reduce((sum, order) => {
+                        return (
+                          sum +
+                          order.items.reduce((itemSum, item) => {
+                            const base = Number(item.product.price);
+                            const extras =
+                              item.selectedOptions?.reduce((total, opt) => {
+                                return (
+                                  total +
+                                  opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
+                                );
+                              }, 0) ?? 0;
+                            return itemSum + (base + extras) * item.quantity;
+                          }, 0)
+                        );
+                      }, 0);
 
-        totalSplitAmount = totalConfirmed / Math.max(1, config.people);
-        break;
+                    totalSplitAmount = totalConfirmed / Math.max(1, config.people);
+                    break;
 
-      case "percentage":
-        const totalConfirmedPercentage = (orders ?? [])
-          .filter(o => o.status === "confirmed")
-          .reduce((sum, order) => {
-            return (
-              sum +
-              order.items.reduce((itemSum, item) => {
-                const base = Number(item.product.price);
-                const extras =
-                  item.selectedOptions?.reduce((total, opt) => {
-                    return (
-                      total +
-                      opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
-                    );
-                  }, 0) ?? 0;
-                return itemSum + (base + extras) * item.quantity;
-              }, 0)
-            );
-          }, 0);
+                  case "percentage":
+                    const totalConfirmedPercentage = (orders ?? [])
+                      .filter(o => o.status === "confirmed")
+                      .reduce((sum, order) => {
+                        return (
+                          sum +
+                          order.items.reduce((itemSum, item) => {
+                            const base = Number(item.product.price);
+                            const extras =
+                              item.selectedOptions?.reduce((total, opt) => {
+                                return (
+                                  total +
+                                  opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
+                                );
+                              }, 0) ?? 0;
+                            return itemSum + (base + extras) * item.quantity;
+                          }, 0)
+                        );
+                      }, 0);
 
-        totalSplitAmount = (totalConfirmedPercentage * config.percentage) / 100;
-        break;
+                    totalSplitAmount = (totalConfirmedPercentage * config.percentage) / 100;
+                    break;
 
-      case "amount":
-        totalSplitAmount = config.amount;
-        break;
+                  case "amount":
+                    totalSplitAmount = config.amount;
+                    break;
 
-      case "products":
-        const selectedItemIds = new Set(config.selectedItems);
+                  case "products":
+                    const selectedItemIds = new Set(config.selectedItems);
 
-        totalSplitAmount = (orders ?? [])
-          .filter(o => o.status === "confirmed")
-          .reduce((sum, order) => {
-            const orderSum = order.items.reduce((itemSum, item) => {
-              if (!selectedItemIds.has(Number(item.id))) return itemSum;
+                    totalSplitAmount = (orders ?? [])
+                      .filter(o => o.status === "confirmed")
+                      .reduce((sum, order) => {
+                        const orderSum = order.items.reduce((itemSum, item) => {
+                          if (!selectedItemIds.has(Number(item.id))) return itemSum;
 
-              const base = Number(item.product.price);
-              const extras =
-                item.selectedOptions?.reduce((total, opt) => {
-                  return (
-                    total +
-                    opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
-                  );
-                }, 0) ?? 0;
-              return itemSum + (base + extras) * item.quantity;
-            }, 0);
-            return sum + orderSum;
-          }, 0);
-        break;
-    }
+                          const base = Number(item.product.price);
+                          const extras =
+                            item.selectedOptions?.reduce((total, opt) => {
+                              return (
+                                total +
+                                opt.values.reduce((sumVal, val) => sumVal + Number(val.price), 0)
+                              );
+                            }, 0) ?? 0;
+                          return itemSum + (base + extras) * item.quantity;
+                        }, 0);
+                        return sum + orderSum;
+                      }, 0);
+                    break;
+                }
 
-    setSplitAmount(totalSplitAmount);
-    setFinalPaymentOpen(true);
-  }}
-/>
+                setSplitAmount(totalSplitAmount);
+                setFinalPaymentOpen(true);
+              }}
+            />
 
             <Dialog
               open={finalPaymentOpen}
@@ -389,10 +491,11 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
                   Por favor selecciona cómo deseas pagar las órdenes confirmadas.
                 </DialogContentText>
               </DialogContent>
-              <DialogActions sx={{ flexDirection: "column", alignItems: "stretch", gap: 1, p: 2 }}>
+              <Box sx={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 1, p: 2 }}>
                 <Button
                   variant="outlined"
                   color="primary"
+                  fullWidth
                   onClick={() => {
                     setFinalPaymentOpen(false);
                     handlePayment("presencial", splitAmount);
@@ -403,6 +506,7 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
                 <Button
                   variant="contained"
                   color="secondary"
+                  fullWidth
                   onClick={() => {
                     setFinalPaymentOpen(false);
                     handlePayment("mercadopago", splitAmount);
@@ -410,7 +514,7 @@ export const OrdersModule: React.FC<OrdersModuleProps> = ({
                 >
                   Pagar con MercadoPago
                 </Button>
-              </DialogActions>
+              </Box>
             </Dialog>
           </Box>
         </>

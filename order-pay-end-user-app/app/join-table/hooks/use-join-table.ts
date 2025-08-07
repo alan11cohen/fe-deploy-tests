@@ -16,8 +16,6 @@ export const useJoinTable = () => {
       return response.data;
     },
     onSuccess: (data) => {
-      console.log("Successfully joined table:", data);
-      // Store session data if needed
       localStorage.setItem("currentSession", JSON.stringify(data.session));
     },
     onError: (error) => {

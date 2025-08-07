@@ -35,6 +35,7 @@ import AddIcon from "@mui/icons-material/Add";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { TableSession } from "@/app/models/table_session";
 import { OrdersModule } from "./orders_module";
+import { useToast } from "@/components/toast-context";
 
 interface MenuModuleProps {
   restaurantId: number;
@@ -60,6 +61,8 @@ export const MenuModule: React.FC<MenuModuleProps> = ({
   >({});
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [tableSessionId, setTableSessionId] = useState<number>();
+  const { showToast } = useToast();
+  const categoryRefs = React.useRef<Record<string, HTMLDivElement>>({});
 
   const textAreaMaxLength = 250;
   var finalPrice = 0;
@@ -72,7 +75,7 @@ export const MenuModule: React.FC<MenuModuleProps> = ({
       setRestaurant(data);
     } catch (e) {
       console.error(e);
-      alert("No se pudo cargar el restaurante.");
+      showToast("No se pudo cargar el restaurante", "error");
     }
   }
 
@@ -88,7 +91,7 @@ export const MenuModule: React.FC<MenuModuleProps> = ({
       setProducts(data.filter((p) => !p.hide));
     } catch (e) {
       console.error(e);
-      alert("No se pudieron cargar los productos.");
+      showToast("No se pudieron cargar los productos", "error");
     } finally {
       setLoadingMenu(false);
     }
@@ -115,10 +118,9 @@ export const MenuModule: React.FC<MenuModuleProps> = ({
 
         sessionStorage.setItem("tableSessionId", data.id.toString());
         setTableSessionId(data.id);
-        console.log("Session created with ID:", data.id);
       } catch (e) {
         console.error(e);
-        alert("No se pudo crear la sesión de la mesa. Aún así puedes observar el menú.");
+        showToast("No se pudo crear la sesión de la mesa. Aún así puedes observar el menú", "error");
       }
     }
 
@@ -148,6 +150,15 @@ export const MenuModule: React.FC<MenuModuleProps> = ({
     });
   }
 
+  const resetProductForm = () => {
+    setQuantity(1);
+    setNotes((prev) => ({ ...prev, [id]: "" }));
+    setSingleSelections({});
+    setMultiSelections({});
+    setSelected(null);
+  };
+
+
   const isChecked = (optionId: number, valueId: number) =>
     (multiSelections[optionId] ?? []).includes(valueId);
 
@@ -156,6 +167,31 @@ export const MenuModule: React.FC<MenuModuleProps> = ({
     loadMenu();
     initializeSession();
   }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+
+    setSingleSelections((prevSingleSelections) => {
+      const initialSelections: Record<number, number> = {};
+
+      selected.productOptions.forEach((opt) => {
+        if (
+          opt.type === "single-choice" &&
+          opt.productOptionValues.length > 0 &&
+          prevSingleSelections[opt.id] === undefined
+        ) {
+          initialSelections[opt.id] = opt.productOptionValues[0].id;
+        }
+      });
+
+      if (Object.keys(initialSelections).length === 0) {
+        return prevSingleSelections;
+      }
+
+      return { ...prevSingleSelections, ...initialSelections };
+    });
+  }, [selected]);
+
 
   if (viewingOrder) {
     return (
@@ -239,10 +275,63 @@ export const MenuModule: React.FC<MenuModuleProps> = ({
           </Box>
         )}
 
+        {products && groupedByCategory && (
+          <Box
+            sx={{
+              display: "flex",
+              overflowX: "auto",
+              gap: 2,
+              pb: 1,
+              mb: 2,
+              position: "sticky",
+              top: 0,
+              backgroundColor: "white",
+              zIndex: 1,
+              pt: 1,
+            }}
+          >
+            {Object.keys(groupedByCategory)
+            .sort((a, b) => {
+              if (a.toLowerCase() === "otros") return 1;
+              if (b.toLowerCase() === "otros") return -1;
+              return a.localeCompare(b);
+            })
+            .map((category) => (
+              <Button
+                key={category}
+                variant="outlined"
+                size="small"
+                onClick={() => {
+                  const ref = categoryRefs.current[category];
+                  if (ref) {
+                    ref.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }
+                }}
+                sx={{
+                  flexShrink: 0,
+                  minWidth: "fit-content",
+                  px: 2,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {category}
+              </Button>
+            ))}
+          </Box>
+        )}
+
+
         <Stack spacing={4} sx={{ maxHeight: "60vh", overflowY: "auto" }}>
           {groupedByCategory &&
-            Object.entries(groupedByCategory).map(([category, items]) => (
-              <Box key={category}>
+            Object.entries(groupedByCategory)
+            .map(([category, items]) => (
+              <Box
+              key={category}
+                ref={(el: HTMLDivElement) => {
+                  categoryRefs.current[category] = el;
+                }}
+                sx={{ scrollMarginTop: 90 }}
+              >
                 <Typography
                   variant="h6"
                   gutterBottom
@@ -677,13 +766,13 @@ export const MenuModule: React.FC<MenuModuleProps> = ({
                       body: JSON.stringify(newOrder),
                     });
                     if (!res.ok) throw new Error("Error al crear orden");
-                    // TODO: ADD TOAST NOTIFICATION
+                    showToast("Producto agregado a la orden", "success");
                   } catch (e) {
                     console.error(e);
-                    alert("No se pudo agregar el producto a la orden.");
+                    showToast("No se pudo agregar el producto a la orden", "error");
                     return;
                   }
-
+                  resetProductForm();
                   setShowModal(false);
                 }}
               >
